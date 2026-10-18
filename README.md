@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🛡️ IoT Botnet Detection — VAE + XGBoost
+# IoT Botnet Detection with a Variational Autoencoder (VAE) and XGBoost on the N-BaIoT Dataset
 
-**Hybrid Deep Learning + Machine Learning approach for detecting IoT botnet attacks on real network traffic.**
+**Hybrid deep learning and machine learning pipeline for detecting Mirai and Gafgyt botnet attacks on real IoT network traffic**
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-FF6F00?logo=tensorflow&logoColor=white)](https://www.tensorflow.org/)
@@ -13,112 +13,186 @@
 
 ---
 
-## 📖 Overview
+## Table of Contents
 
-This project detects botnet attacks (**Mirai** & **Gafgyt**) on IoT devices using a **two-stage hybrid pipeline**:
-
-1. **Variational AutoEncoder (VAE)** — learns a compact 20-dimensional latent representation of network traffic in an unsupervised way (trained on benign traffic only).
-2. **XGBoost** — classifies the latent features into 11 attack categories (and binary normal/attack).
-
-The model is evaluated on **N-BaIoT**, a dataset of **7+ million real network flows** captured from **9 commercial IoT devices**.
-
----
-
-## 🎯 Results
-
-### Binary Classification (Normal vs Attack)
-
-| Metric    | Score      |
-|-----------|------------|
-| Accuracy  | **99.99%** |
-| Precision | 99.99%     |
-| Recall    | 99.99%     |
-| F1-Score  | 99.99%     |
-
-### Multi-Class Classification (11 classes)
-
-| Metric    | Score      |
-|-----------|------------|
-| Accuracy  | **87.83%** |
-| Precision | 93.62%     |
-| Recall    | 87.83%     |
-| F1-Score  | 83.66%     |
-
-> **Note:** The multi-class score is bounded by a structural limitation of the dataset — `gafgyt_tcp` and `gafgyt_udp` produce nearly identical statistical signatures (the Kitsune features are protocol-agnostic), making them inherently hard to separate.
+1. [Overview](#overview)
+2. [Results](#results)
+3. [Model Architecture](#model-architecture)
+4. [Training Configuration](#training-configuration)
+5. [Dataset](#dataset)
+6. [Preprocessing Pipeline](#preprocessing-pipeline)
+7. [Design Choices](#design-choices)
+8. [Visualizations](#visualizations)
+9. [Getting Started](#getting-started)
+10. [Project Structure](#project-structure)
+11. [Limitations](#limitations)
+12. [Tech Stack](#tech-stack)
+13. [References](#references)
+14. [License](#license)
 
 ---
 
-## 🏗️ Architecture
+## Overview
 
-```
+Connected devices such as cameras, doorbells and baby monitors are frequent targets of botnets like Mirai and Gafgyt. This project detects these attacks from network traffic statistics using a two-stage hybrid pipeline:
+
+1. **Variational Autoencoder (VAE).** An unsupervised neural network, trained on benign traffic only, compresses each network flow from 115 features into a compact 20-dimensional latent representation.
+2. **XGBoost.** A gradient boosting classifier takes the latent features and predicts one of 11 classes: benign traffic, five Gafgyt attack types and five Mirai attack types.
+
+The pipeline is evaluated on N-BaIoT, a public dataset of more than 7 million real network flows captured from 9 commercial IoT devices.
+
+## Results
+
+### Binary classification (normal versus attack)
+
+| Metric | Score |
+|---|---|
+| Accuracy | 99.99 % |
+| Precision | 99.99 % |
+| Recall | 99.99 % |
+| F1-score | 99.99 % |
+
+### Multi-class classification (11 classes)
+
+Evaluated on a stratified hold-out test set of 1.41 million flows.
+
+| Metric | Score |
+|---|---|
+| Accuracy | 87.83 % |
+| Precision (weighted) | 93.62 % |
+| Recall (weighted) | 87.83 % |
+| F1-score (weighted) | 83.66 % |
+| Training time (XGBoost) | 3,470 s |
+| Prediction time (test set) | 88 s |
+
+Nine of the eleven classes are recognized almost perfectly. The multi-class score is limited mainly by one pair of classes: `gafgyt_tcp` and `gafgyt_udp`. The Kitsune features do not encode the transport layer protocol, so the two attacks have nearly identical statistical signatures and the classifier mostly predicts `gafgyt_udp` for both. This confusion appears in both the autoencoder baseline and the VAE model, which suggests it comes from the data rather than from the model choice.
+
+## Model Architecture
+
+```text
 Network flow (115 features)
         |
         v
-+---------------------+
-|   VAE Encoder       |   115 -> 96 -> 64 -> 32
-|                     |
-|   mu(20)+logvar(20) |   probabilistic bottleneck
-|   z = mu + sigma*e  |   reparameterization trick
-+---------------------+
++-----------------------+
+|     VAE encoder       |   115 -> 96 -> 64 -> 32
+|                       |
+|  mu (20) + log var(20)|   probabilistic bottleneck
+|  z = mu + sigma * eps |   reparameterization trick
++-----------------------+
         |
-        v  latent features (mu, 20D)
-+---------------------+
-|   XGBoost           |   400 trees, sequential boosting
-+---------------------+
+        v   latent features: mu (20 dimensions)
++-----------------------+
+|       XGBoost         |   400 trees, sequential boosting
++-----------------------+
         |
         v
-   Prediction (11 classes)
+  Prediction (11 classes)
 ```
 
-**VAE loss** combines reconstruction and regularization:
+| Component | Layers | Dimensions |
+|---|---|---|
+| Encoder | 3 dense layers | 115 -> 96 -> 64 -> 32 |
+| Bottleneck (mean) | 1 dense layer | 32 -> mu (20) |
+| Bottleneck (variance) | 1 dense layer | 32 -> log sigma^2 (20) |
+| Decoder | 3 dense layers | 20 -> 32 -> 64 -> 96 -> 115 |
 
+The VAE loss combines a reconstruction term and a regularization term:
+
+```text
+L = MSE(x, x_hat) + beta * KL( N(mu, sigma^2) || N(0, I) )
 ```
-L = MSE(x, x_hat) + beta * KL( N(mu,sigma^2) || N(0,I) )
-```
 
-The KL term forces a continuous Gaussian latent space, improving class separation.
+The KL term pushes the latent space toward a smooth Gaussian distribution, which gives the classifier a better organized representation than a standard autoencoder.
 
----
+## Training Configuration
 
-## 📊 Visualizations
+### Variational Autoencoder
+
+| Parameter | Value |
+|---|---|
+| Loss | MSE + beta * KL divergence, beta = 0.5 |
+| Optimizer | Adam, learning rate 1e-3, gradient clip norm 1.0 |
+| Scheduler | ReduceLROnPlateau (patience 4, factor 0.5, minimum learning rate 1e-6) |
+| Epochs | up to 60 |
+| Batch size | 512 |
+| Early stopping | patience 10 |
+| Training data | benign traffic only |
+| Training loss | decreased from 41.56 to 11.27 |
+
+### XGBoost classifier
+
+| Parameter | Value |
+|---|---|
+| Input | latent mean `mu`, 20 features |
+| `n_estimators` | 400 |
+| `max_depth` | 10 |
+| `learning_rate` | 0.08 |
+| `objective` | `multi:softmax` |
+| `num_class` | 11 |
+
+## Dataset
+
+**N-BaIoT** from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/442/detection+of+iot+botnet+attacks+n+baiot).
+
+| Property | Value |
+|---|---|
+| Flows | 7,062,606 |
+| Size | about 7.5 GB (99 CSV files) |
+| Features | 115, extracted with Kitsune |
+| Devices | 9 commercial IoT devices |
+| Classes | 11 (1 benign, 5 Gafgyt, 5 Mirai) |
+| Train / test split | stratified 80 / 20 (5.65 M / 1.41 M flows) |
+
+The 115 features are statistical aggregations over sliding time windows (5 s, 3 s, 1 s, 100 ms and 10 ms) describing packet volume, magnitude and correlation. Two devices, the Ennio doorbell and the Samsung webcam, were not infected with Mirai.
+
+## Preprocessing Pipeline
+
+Raw Kitsune features can reach values close to 1e12 during DDoS bursts, which makes neural network training diverge. A robust normalization pipeline solves this problem.
+
+| Step | Operation | Effect |
+|---|---|---|
+| 1 | Loading | 9 devices, 99 files, 7,062,606 rows |
+| 2 | Cleaning | Infinite values converted to NaN and removed |
+| 3 | Label encoding | 11 classes mapped to integers 0 to 10 |
+| 4 | Stratified split | 80 % training, 20 % test, class proportions preserved |
+| 5 | Normalization | Percentile clipping (P1 to P99), signed logarithm, standard scaling, clipping at 5 standard deviations |
+| 6 | Validation | Assertion that no NaN or infinite value remains |
+
+After normalization, every feature lies in the range [-5, 5] with a standard deviation close to 1. All statistics are computed on the training set only, so no information leaks from the test set.
+
+## Design Choices
+
+**Why train the VAE on benign traffic only?**
+The VAE learns what normal traffic looks like. Traffic that differs from this distribution is reconstructed poorly, which is the classic principle of one-class anomaly detection. The latent space it learns then serves as a compact input for the supervised classifier.
+
+**Why use `mu` instead of `z` as input to XGBoost?**
+The sampled vector `z = mu + sigma * epsilon` is random and changes at every forward pass. The mean `mu` is deterministic, so it provides stable and reproducible features.
+
+**Why XGBoost?**
+Boosting builds trees sequentially, and each tree corrects the errors of the previous ones. Compared with a Random Forest baseline trained on a standard autoencoder (86.35 % accuracy, 82.04 % weighted F1-score), the VAE with XGBoost improves accuracy by 1.48 points and weighted F1-score by 1.62 points. The trade-off is speed: the baseline predicts roughly 3 times faster (27 s against 88 s on the test set).
+
+## Visualizations
 
 <div align="center">
 
-| Latent Space (t-SNE) | Confusion Matrix |
+| Latent space (t-SNE) | Confusion matrix |
 |:---:|:---:|
 | <img src="images/03_latent_tsne.png" width="400"/> | <img src="images/05_multiclasse.png" width="400"/> |
 
 </div>
 
-The circular structure of the latent space is the signature of the KL regularization (Gaussian prior).
+The structure of the latent space is consistent with the Gaussian prior imposed by the KL regularization.
 
----
+## Getting Started
 
-## 📁 Dataset
-
-**N-BaIoT** — [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/442/detection+of+iot+botnet+attacks+n+baiot)
-
-| Property        | Value                              |
-|-----------------|------------------------------------|
-| Flows           | 7,062,606                          |
-| Features        | 115 (extracted via Kitsune)        |
-| Devices         | 9 commercial IoT devices           |
-| Classes         | 11 (1 benign + 5 Gafgyt + 5 Mirai) |
-
-The 115 features are statistical aggregations over sliding time windows (5s, 3s, 1s, 100ms, 10ms) of packet volume, magnitude, and correlation.
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone the repo
+### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/iot-botnet-detection.git
-cd iot-botnet-detection
+git clone https://github.com/YOUR_USERNAME/iot-botnet-detection-vae-xgboost.git
+cd iot-botnet-detection-vae-xgboost
 ```
 
-### 2. Install dependencies
+### 2. Install the dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -126,7 +200,7 @@ pip install -r requirements.txt
 
 ### 3. Download the dataset
 
-Download N-BaIoT from [UCI](https://archive.ics.uci.edu/dataset/442/detection+of+iot+botnet+attacks+n+baiot) and update `BASE_PATH` in the notebook.
+Download N-BaIoT from the [UCI repository](https://archive.ics.uci.edu/dataset/442/detection+of+iot+botnet+attacks+n+baiot) and set the `BASE_PATH` variable in the notebook to the folder containing the CSV files.
 
 ### 4. Run the notebook
 
@@ -134,66 +208,44 @@ Download N-BaIoT from [UCI](https://archive.ics.uci.edu/dataset/442/detection+of
 jupyter notebook notebooks/VAE_XGBoost.ipynb
 ```
 
----
+Training on the full dataset is memory intensive. A machine with at least 16 GB of RAM is recommended.
 
-## 🔬 Pipeline Details
+## Project Structure
 
-### Robust Preprocessing (key step)
-
-Raw Kitsune features reach values up to `1e12` (DDoS bursts), which cause neural network divergence. A 4-step normalization pipeline solves this:
-
-| Step | Operation         | Effect                       |
-|------|-------------------|------------------------------|
-| 1    | Clip P1-P99       | Removes extreme outliers     |
-| 2    | Signed log        | Compresses `1e12` to `~28`   |
-| 3    | StandardScaler    | Centers to mean 0, std 1     |
-| 4    | Clip +/-5 sigma   | Guarantees `[-5, +5]` range  |
-
-All statistics are computed **on the training set only** (no data leakage).
-
-### Why train the VAE on benign traffic only?
-
-The VAE learns the distribution of *normal* traffic. Anomalies (attacks) are poorly reconstructed -> high reconstruction error -> detectable. This is a classic **one-class anomaly detection** strategy that also generalizes to zero-day attacks.
-
-### Why use mu instead of z for XGBoost?
-
-`z = mu + sigma*epsilon` is stochastic (changes every forward pass). `mu` is deterministic -> stable, reproducible features for the classifier.
-
----
-
-## 🗂️ Project Structure
-
-```
-iot-botnet-detection/
+```text
+iot-botnet-detection-vae-xgboost/
 ├── notebooks/
-│   └── VAE_XGBoost.ipynb        # Full pipeline
-├── images/                       # Generated plots
-├── models/                       # Saved models (after training)
+│   └── VAE_XGBoost.ipynb        # Full pipeline: preprocessing, VAE, XGBoost, evaluation
+├── images/                      # Generated figures
+├── models/                      # Saved models (created after training)
 ├── requirements.txt
 ├── LICENSE
 └── README.md
 ```
 
----
+## Limitations
 
-## 🛠️ Tech Stack
+- **Protocol ambiguity.** `gafgyt_tcp` and `gafgyt_udp` cannot be reliably separated with these features, which caps the multi-class score.
+- **Random split.** The train and test sets are drawn at random from the same captures. Flows from the same attack session can appear on both sides, so the reported scores may be optimistic compared with a deployment on unseen devices or new capture sessions.
+- **Single evaluation.** Results come from one split and one training run. Cross-validation or repeated runs with different seeds would give a more reliable estimate.
+- **Known attack families only.** The classifier is trained on Mirai and Gafgyt. Its behavior on other botnet families has not been evaluated.
+- **Offline evaluation.** The pipeline was evaluated on recorded data, not on live traffic.
 
-- **TensorFlow / Keras** — VAE implementation
-- **XGBoost** — gradient boosting classifier
-- **scikit-learn** — preprocessing, metrics, t-SNE
-- **NumPy / Pandas** — data handling
-- **Matplotlib / Seaborn** — visualizations
+## Tech Stack
 
----
+- **TensorFlow / Keras** for the VAE
+- **XGBoost** for the gradient boosting classifier
+- **scikit-learn** for preprocessing, metrics and t-SNE
+- **NumPy and Pandas** for data handling
+- **Matplotlib and Seaborn** for visualization
 
-## 📜 License
+## References
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
+1. Y. Meidan et al., "N-BaIoT: Network-Based Detection of IoT Botnet Attacks Using Deep Autoencoders," *IEEE Pervasive Computing*, vol. 17, no. 3, pp. 12-22, 2018.
+2. Y. Mirsky et al., "Kitsune: An Ensemble of Autoencoders for Online Network Intrusion Detection," *NDSS*, 2018.
+3. D. P. Kingma and M. Welling, "Auto-Encoding Variational Bayes," *ICLR*, 2014.
+4. T. Chen and C. Guestrin, "XGBoost: A Scalable Tree Boosting System," *KDD*, 2016.
 
----
+## License
 
-<div align="center">
-
-⭐ If you find this project useful, consider giving it a star!
-
-</div>
+This project is released under the MIT License. See the [LICENSE](LICENSE) file for details.
